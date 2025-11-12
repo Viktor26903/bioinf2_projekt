@@ -132,50 +132,71 @@ int main(int argc, char *argv[])
         if (line[0] == '>')
         {
             id = line.substr(1);
+            names.push_back(id);
             sequences[id] = "";
             continue;
         }
         sequences[id] += line;
-        names.push_back(id);
     }
-    unordered_map<pair<string, string>, pair<string, string>> cleanedSequences;
-#pragma omp parallel
-    {
-        unordered_map<pair<string, string>, pair<string, string>> localMap;
-
-#pragma omp for nowait
-        for (int i = 0; i < names.size(); i++)
-        {
-            for (int j = i + 1; j < names.size(); j++)
-            {
-                localMap[{names[i], names[j]}] = poravnaj(sequences[names[i]], sequences[names[j]]);
-            }
-        }
-
-#pragma omp critical
-        {
-            printf("Merging results from thread %d...\n", omp_get_thread_num());
-            for (auto &p : localMap)
-                cleanedSequences[p.first] = p.second;
-        }
-    }
-    file.close();
-    printf("Cleaning completed. Writing to output file...\n");
     ofstream outputFile(outputFileName, ios::binary);
     if (!outputFile.is_open())
     {
         cerr << "Error opening file: " << outputFileName << endl;
         return 1;
     }
-    int cleanedCount = cleanedSequences.size();
-    outputFile.write(reinterpret_cast<char *>(&cleanedCount), sizeof(int));
-    for (auto &seq : cleanedSequences)
+    // printf("names size: %d\n", names.size());
+    int totalWrites = 0;
+#pragma omp parallel
     {
-        outputFile.write(reinterpret_cast<const char *>(seq.first.first.c_str()), seq.first.first.size() + 1);
-        outputFile.write(reinterpret_cast<const char *>(seq.first.second.c_str()), seq.first.second.size() + 1);
-        outputFile.write(reinterpret_cast<const char *>(seq.second.first.c_str()), seq.second.first.size() + 1);
-        outputFile.write(reinterpret_cast<const char *>(seq.second.second.c_str()), seq.second.second.size() + 1);
+        unordered_map<pair<string, string>, pair<string, string>> localMap;
+        int numPairs = 0;
+
+        for (int i = 0; i < names.size(); i++)
+        {
+#pragma omp for nowait
+            for (int j = i + 1; j < names.size(); j++)
+            {
+                localMap[{names[i], names[j]}] = poravnaj(sequences[names[i]], sequences[names[j]]);
+                numPairs++;
+                if (numPairs % 100000 == 0)
+                {
+#pragma omp critical
+                    {
+                        printf("Merging results from thread %d... %d\n", omp_get_thread_num(), numPairs);
+                        int cleanedCount = localMap.size();
+                        outputFile.write(reinterpret_cast<char *>(&cleanedCount), sizeof(int));
+                        for (auto &seq : localMap)
+                        {
+                            outputFile.write(reinterpret_cast<const char *>(seq.first.first.c_str()), seq.first.first.size() + 1);
+                            outputFile.write(reinterpret_cast<const char *>(seq.first.second.c_str()), seq.first.second.size() + 1);
+                            outputFile.write(reinterpret_cast<const char *>(seq.second.first.c_str()), seq.second.first.size() + 1);
+                            outputFile.write(reinterpret_cast<const char *>(seq.second.second.c_str()), seq.second.second.size() + 1);
+                        }
+                        localMap.clear();
+                        numPairs = 0;
+                        totalWrites++;
+                    }
+                }
+            }
+        }
+#pragma omp critical
+        {
+            printf("Merging results from thread %d...\n", omp_get_thread_num());
+            int cleanedCount = localMap.size();
+            outputFile.write(reinterpret_cast<char *>(&cleanedCount), sizeof(int));
+            for (auto &seq : localMap)
+            {
+                outputFile.write(reinterpret_cast<const char *>(seq.first.first.c_str()), seq.first.first.size() + 1);
+                outputFile.write(reinterpret_cast<const char *>(seq.first.second.c_str()), seq.first.second.size() + 1);
+                outputFile.write(reinterpret_cast<const char *>(seq.second.first.c_str()), seq.second.first.size() + 1);
+                outputFile.write(reinterpret_cast<const char *>(seq.second.second.c_str()), seq.second.second.size() + 1);
+            }
+            localMap.clear();
+            totalWrites++;
+        }
     }
+    printf("Total writes: %d\n", totalWrites);
+    file.close();
     outputFile.close();
 
     return 0;
