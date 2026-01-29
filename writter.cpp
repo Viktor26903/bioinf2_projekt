@@ -1,4 +1,3 @@
-// writer.cpp
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -6,7 +5,7 @@
 #include <vector>
 #include <fstream>
 #include <omp.h>
-#include <cstdio> // remove
+#include <cstdio>
 #include <filesystem>
 
 using namespace std;
@@ -32,7 +31,6 @@ bool allowed(char c)
     return c == 'A' || c == 'C' || c == 'G' || c == 'T' || c == '-';
 }
 
-// --- alignment helpers (your logic re-used) ---
 int match(const string &seq1, const string &seq2, int index1, int index2, const string &direction)
 {
     int matchCount = 0;
@@ -87,7 +85,6 @@ tuple<string, string, int> provjeri_susjede(string seq1, string seq2, int index1
 
 pair<string, string> poravnaj(string seq1, string seq2)
 {
-    // remove positions where both have gaps
     for (size_t i = 0; i < min(seq1.length(), seq2.length()); ++i)
     {
         if (seq1[i] == '-' && seq2[i] == '-')
@@ -124,7 +121,6 @@ pair<string, string> poravnaj(string seq1, string seq2)
     return {seq1, seq2};
 }
 
-// --- main writer ---
 int main(int argc, char *argv[])
 {
     if (argc < 3)
@@ -135,7 +131,6 @@ int main(int argc, char *argv[])
     string inputFileName = argv[1];
     string outputFileName = argv[2];
 
-    // Read FASTA (simple)
     ifstream file(inputFileName);
     if (!file.is_open())
     {
@@ -176,18 +171,16 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // create tmp dir for parts
+    // privremeni direktorij
     string tmpdir = outputFileName + ".parts";
     fs::create_directory(tmpdir);
 
-    // Parallel align: each thread collects its results and writes ONE .part file
+    // Paralelno poravnanje
     int max_threads = omp_get_max_threads();
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        // local container for this thread
         vector<pair<pair<string, string>, pair<string, string>>> local_entries;
-        // Parallel for distributing outer loop across threads
 #pragma omp for schedule(dynamic)
         for (int i = 0; i < (int)N; ++i)
         {
@@ -198,7 +191,7 @@ int main(int argc, char *argv[])
             }
         }
 
-        // each thread writes exactly one .part file containing its whole block
+        // zapiši svoj dio u privremenu datoteku
         string partName = tmpdir + "/part_" + to_string(tid) + ".bin";
         ofstream partOut(partName, ios::binary);
         if (!partOut.is_open())
@@ -223,9 +216,9 @@ int main(int argc, char *argv[])
             }
             partOut.close();
         }
-    } // end parallel
+    }
 
-    // Merge part files into final output (concatenate)
+    // Spoji dijelove u konačni izlaz
     ofstream finalOut(outputFileName, ios::binary);
     if (!finalOut.is_open())
     {
@@ -233,7 +226,6 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // iterate thread ids 0..max_threads-1 and append if file exists
     for (int tid = 0; tid < max_threads; ++tid)
     {
         string partName = tmpdir + "/part_" + to_string(tid) + ".bin";
@@ -242,7 +234,7 @@ int main(int argc, char *argv[])
         ifstream partIn(partName, ios::binary);
         finalOut << partIn.rdbuf();
         partIn.close();
-        fs::remove(partName); // cleanup
+        fs::remove(partName);
     }
     finalOut.close();
     fs::remove(tmpdir);

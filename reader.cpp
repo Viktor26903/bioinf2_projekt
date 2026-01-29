@@ -28,7 +28,7 @@ string readCString(ifstream &input)
 {
     string result;
     char ch;
-    // read bytes until null or EOF
+    // citaj do NULL ili EOF
     while (input.get(ch))
     {
         if (ch == '\0')
@@ -53,18 +53,16 @@ void read_and_predict_hmm(const string &input,
     ifstream file(input, ios::binary);
     if (!file.is_open())
     {
-        cerr << "Error opening file: " << input << endl;
+        cerr << "Greška pri otvaranju datoteke: " << input << endl;
         exit(1);
     }
 
-    // counters
     long long beg_match = 0, beg_ins = 0, beg_del = 0;
     long long match_match = 0, match_ins = 0, match_del = 0, match_end = 0;
     long long ins_match = 0, ins_ins = 0, ins_del = 0, ins_end = 0;
     long long del_match = 0, del_del = 0, del_ins = 0, del_end = 0;
     long long beg = 0, ins = 0, del = 0, match = 0;
 
-    // ensure a and e sizes
     if (a.size() < 4)
         a.assign(4, vector<double>(5, 0.0));
     else
@@ -85,7 +83,6 @@ void read_and_predict_hmm(const string &input,
             continue;
         for (int i = 0; i < cleanedCount; ++i)
         {
-            // read four null-terminated strings
             string name1 = readCString(file);
             if (!file)
             {
@@ -193,7 +190,6 @@ void read_and_predict_hmm(const string &input,
         beg += cleanedCount;
     }
 
-    // Fill transition matrix a (4x5), safe divisions
     a[0][0] = 0.0;
     a[0][1] = safe_div((double)beg_match, (double)beg);
     a[0][2] = safe_div((double)beg_ins, (double)beg);
@@ -201,22 +197,22 @@ void read_and_predict_hmm(const string &input,
     a[0][4] = 0.0;
 
     a[1][0] = 0.0;
-    a[1][1] = safe_div((double)match_match, (double)(match - match_end));
-    a[1][2] = safe_div((double)match_ins, (double)(match - match_end));
-    a[1][3] = safe_div((double)match_del, (double)(match - match_end));
-    a[1][4] = safe_div((double)match_end, (double)(match - match_end));
+    a[1][1] = safe_div((double)match_match, (double)(match));
+    a[1][2] = safe_div((double)match_ins, (double)(match));
+    a[1][3] = safe_div((double)match_del, (double)(match));
+    a[1][4] = safe_div((double)match_end, (double)(match));
 
     a[2][0] = 0.0;
-    a[2][1] = safe_div((double)ins_match, (double)(ins - ins_end));
-    a[2][2] = safe_div((double)ins_ins, (double)(ins - ins_end));
-    a[2][3] = safe_div((double)ins_del, (double)(ins - ins_end));
-    a[2][4] = safe_div((double)ins_end, (double)(ins - ins_end));
+    a[2][1] = safe_div((double)ins_match, (double)(ins));
+    a[2][2] = safe_div((double)ins_ins, (double)(ins));
+    a[2][3] = safe_div((double)ins_del, (double)(ins));
+    a[2][4] = safe_div((double)ins_end, (double)(ins));
 
     a[3][0] = 0.0;
-    a[3][1] = safe_div((double)del_match, (double)(del - del_end));
-    a[3][2] = safe_div((double)del_ins, (double)(del - del_end));
-    a[3][3] = safe_div((double)del_del, (double)(del - del_end));
-    a[3][4] = safe_div((double)del_end, (double)(del - del_end));
+    a[3][1] = safe_div((double)del_match, (double)(del));
+    a[3][2] = safe_div((double)del_ins, (double)(del));
+    a[3][3] = safe_div((double)del_del, (double)(del));
+    a[3][4] = safe_div((double)del_end, (double)(del));
 
     // normalize emissions
     if (match > 0)

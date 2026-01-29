@@ -5,13 +5,13 @@
 #include <unordered_map>
 #include <cmath>
 #include <algorithm>
+#include <omp.h>
 
 using namespace std;
 
 static const double NEG_INF = -1e300;
 static inline double logp(double p) { return (p <= 0.0) ? NEG_INF : log(p); }
 
-// -------------------- UČITAVANJE HMM PARAMETARA --------------------
 static inline void trim_cr(string &s)
 {
     if (!s.empty() && s.back() == '\r')
@@ -22,9 +22,8 @@ static void load_initial_values(const string &path,
                                 vector<vector<double>> &a,
                                 vector<unordered_map<string, double>> &e)
 {
-    const int S = 5; // Begin, Match, Ins, Del, End
-    a.assign(S, vector<double>(S, 0.0));
-    e.assign(S, unordered_map<string, double>());
+    a.assign(5, vector<double>(5, 0.0));
+    e.assign(5, unordered_map<string, double>());
 
     ifstream file(path);
     if (!file.is_open())
@@ -33,10 +32,10 @@ static void load_initial_values(const string &path,
         exit(1);
     }
 
-    // Učitaj tranzicijsku matricu A (5x5)
-    for (int i = 0; i < S; ++i)
+    // Matrica A
+    for (int i = 0; i < 5; ++i)
     {
-        for (int j = 0; j < S; ++j)
+        for (int j = 0; j < 5; ++j)
         {
             string tok;
             if (!(file >> tok))
@@ -49,7 +48,7 @@ static void load_initial_values(const string &path,
         }
     }
 
-    // Učitaj emisije: <key> : <prob>
+    // Matrica E
     string key;
     while (file >> key)
     {
@@ -61,40 +60,35 @@ static void load_initial_values(const string &path,
         trim_cr(colon);
         trim_cr(key);
 
-        // Klasifikacija:
-        // "-A" -> Insertion (state 2)
-        // "A-" -> Deletion (state 3)
-        // "AA" -> Match (state 1)
-        if (key.size() >= 2 && key[0] == '-')
+        // -X -> Insertion
+        // X- -> Deletion
+        // XX -> Match
+        if (key[0] == '-')
             e[2][key] = p;
-        else if (key.size() >= 2 && key[1] == '-')
+        else if (key[1] == '-')
             e[3][key] = p;
         else
             e[1][key] = p;
     }
 }
 
-// -------------------- EMISIJSKA VJEROJATNOST --------------------
-// Za Match: kombinira oba znaka (npr. "AA", "CT")
-// Za Ix: kombinira samo x znak (npr. "-A", "-G")
-// Za Iy: kombinira samo y znak (npr. "A-", "G-")
 static inline double emit_log(int state, char x, char y,
                               const vector<unordered_map<string, double>> &E,
                               double floor_prob = 1e-12)
 {
     string obs;
-    if (state == 1)
-    { // Match
+    if (state == 1) // Match
+    {
         obs.push_back(x);
         obs.push_back(y);
     }
-    else if (state == 2)
-    { // Insertion in x (gap u y)
+    else if (state == 2) // Insertion
+    {
         obs.push_back('-');
         obs.push_back(y);
     }
-    else if (state == 3)
-    { // Deletion from x (gap u x)
+    else if (state == 3) // Deletion
+    {
         obs.push_back(x);
         obs.push_back('-');
     }
@@ -108,8 +102,6 @@ static inline double emit_log(int state, char x, char y,
     return logp(p);
 }
 
-// -------------------- PAIR-HMM VITERBI ALIGNMENT --------------------
-// Stvara poravnanje od neporavnatih sekvenci x i y
 struct AlignmentResult
 {
     string aligned_x;
@@ -128,14 +120,13 @@ static AlignmentResult viterbi_align(const string &x, const string &y,
     int lenX = (int)x.size();
     int lenY = (int)y.size();
 
-    // DP tablice: dp[i][j][state] = najbolja log-vjerojatnost do pozicije (i,j) u stanju state
-    // state: 0=M, 1=Ix, 2=Iy
+    // dp[i][j][state] = najbolja log-vjerojatnost do pozicije (i,j) u stanju state
     vector<vector<vector<double>>> dp(lenX + 1,
                                       vector<vector<double>>(lenY + 1, vector<double>(3, NEG_INF)));
     vector<vector<vector<int>>> back(lenX + 1,
                                      vector<vector<int>>(lenY + 1, vector<int>(3, -1)));
 
-    // Tranzicijska funkcija
+    // lambda funkcija koja daje log-vjerojatnost prijelaza
     auto trans = [&](int from, int to) -> double
     {
         if (from == END)
@@ -148,110 +139,101 @@ static AlignmentResult viterbi_align(const string &x, const string &y,
         return logp(p);
     };
 
-    // INICIJALIZACIJA: BEGIN -> M/Ix/Iy
+    // Inicijalizacija
     dp[0][0][0] = trans(BEGIN, M);
     dp[0][0][1] = trans(BEGIN, Ix);
     dp[0][0][2] = trans(BEGIN, Iy);
 
-    // REKURZIJA
     for (int i = 0; i <= lenX; ++i)
     {
         for (int j = 0; j <= lenY; ++j)
         {
-            // M(i,j) - konzumira oba: x[i-1] i y[j-1]
+            // Match
             if (i > 0 && j > 0)
             {
                 double emit = emit_log(M, x[i - 1], y[j - 1], E);
 
-                // Dolazi iz M(i-1,j-1)
                 double scoreM = dp[i - 1][j - 1][0] + trans(M, M) + emit;
-                // Dolazi iz Ix(i-1,j-1)
                 double scoreIx = dp[i - 1][j - 1][1] + trans(Ix, M) + emit;
-                // Dolazi iz Iy(i-1,j-1)
                 double scoreIy = dp[i - 1][j - 1][2] + trans(Iy, M) + emit;
 
                 if (scoreM >= scoreIx && scoreM >= scoreIy)
                 {
                     dp[i][j][0] = scoreM;
-                    back[i][j][0] = 0; // iz M
+                    back[i][j][0] = M;
                 }
                 else if (scoreIx >= scoreIy)
                 {
                     dp[i][j][0] = scoreIx;
-                    back[i][j][0] = 1; // iz Ix
+                    back[i][j][0] = Ix;
                 }
                 else
                 {
                     dp[i][j][0] = scoreIy;
-                    back[i][j][0] = 2; // iz Iy
+                    back[i][j][0] = Iy;
                 }
             }
 
-            // Ix(i,j) - konzumira samo x[i-1], gap u y
+            // Insertion
             if (i > 0)
             {
-                double emit = emit_log(Ix, x[i - 1], 'X', E); // 'X' placeholder, koristi se '-'
+                double emit = emit_log(Ix, x[i - 1], '-', E);
 
-                // Dolazi iz M(i-1,j) - otvara gap
                 double scoreM = dp[i - 1][j][0] + trans(M, Ix) + emit;
-                // Dolazi iz Ix(i-1,j) - produži gap
                 double scoreIx = dp[i - 1][j][1] + trans(Ix, Ix) + emit;
 
                 if (scoreM >= scoreIx)
                 {
                     dp[i][j][1] = scoreM;
-                    back[i][j][1] = 0; // iz M
+                    back[i][j][1] = M;
                 }
                 else
                 {
                     dp[i][j][1] = scoreIx;
-                    back[i][j][1] = 1; // iz Ix
+                    back[i][j][1] = Ix;
                 }
             }
 
-            // Iy(i,j) - konzumira samo y[j-1], gap u x
+            // Deletion
             if (j > 0)
             {
-                double emit = emit_log(Iy, 'X', y[j - 1], E);
+                double emit = emit_log(Iy, '-', y[j - 1], E);
 
-                // Dolazi iz M(i,j-1) - otvara gap
                 double scoreM = dp[i][j - 1][0] + trans(M, Iy) + emit;
-                // Dolazi iz Iy(i,j-1) - produži gap
                 double scoreIy = dp[i][j - 1][2] + trans(Iy, Iy) + emit;
 
                 if (scoreM >= scoreIy)
                 {
                     dp[i][j][2] = scoreM;
-                    back[i][j][2] = 0; // iz M
+                    back[i][j][2] = M;
                 }
                 else
                 {
                     dp[i][j][2] = scoreIy;
-                    back[i][j][2] = 2; // iz Iy
+                    back[i][j][2] = Iy;
                 }
             }
         }
     }
 
-    // TERMINACIJA: pronađi najbolje završno stanje
     double bestScore = dp[lenX][lenY][0] + trans(M, END);
-    int lastState = 0;
+    int lastState = M;
 
     double scoreIx = dp[lenX][lenY][1] + trans(Ix, END);
     if (scoreIx > bestScore)
     {
         bestScore = scoreIx;
-        lastState = 1;
+        lastState = Ix;
     }
 
     double scoreIy = dp[lenX][lenY][2] + trans(Iy, END);
     if (scoreIy > bestScore)
     {
         bestScore = scoreIy;
-        lastState = 2;
+        lastState = Iy;
     }
 
-    // BACKTRACKING: rekonstruiraj poravnanje
+    // Rekonstrukcija poravnanja
     string aligned_x, aligned_y;
     int i = lenX, j = lenY;
     int state = lastState;
@@ -260,49 +242,46 @@ static AlignmentResult viterbi_align(const string &x, const string &y,
 
     while (i > 0 || j > 0)
     {
-        if (state == 0)
+        if (state == M)
         { // Match
             if (i > 0 && j > 0)
             {
                 aligned_x.push_back(x[i - 1]);
                 aligned_y.push_back(y[j - 1]);
                 countM++;
-                int prevState = back[i][j][0];
+                state = back[i][j][M];
                 i--;
                 j--;
-                state = prevState;
             }
             else
             {
                 break;
             }
         }
-        else if (state == 1)
-        { // Ix - gap u y
+        else if (state == Ix)
+        { // Insert
             if (i > 0)
             {
                 aligned_x.push_back(x[i - 1]);
                 aligned_y.push_back('-');
                 countIx++;
-                int prevState = back[i][j][1];
+                state = back[i][j][Ix];
                 i--;
-                state = prevState;
             }
             else
             {
                 break;
             }
         }
-        else if (state == 2)
-        { // Iy - gap u x
+        else if (state == Iy)
+        { // Delete
             if (j > 0)
             {
                 aligned_x.push_back('-');
                 aligned_y.push_back(y[j - 1]);
                 countIy++;
-                int prevState = back[i][j][2];
+                state = back[i][j][Iy];
                 j--;
-                state = prevState;
             }
             else
             {
@@ -315,7 +294,7 @@ static AlignmentResult viterbi_align(const string &x, const string &y,
         }
     }
 
-    // Poravnanje je naopako (backtracking ide unatrag)
+    // Poravnanje je naopako
     reverse(aligned_x.begin(), aligned_x.end());
     reverse(aligned_y.begin(), aligned_y.end());
 
@@ -330,56 +309,121 @@ static AlignmentResult viterbi_align(const string &x, const string &y,
     return result;
 }
 
-// -------------------- MAIN --------------------
+string readCString(ifstream &input)
+{
+    string result;
+    char ch;
+    // citaj do NULL ili EOF
+    while (input.get(ch))
+    {
+        if (ch == '\0')
+            break;
+        result.push_back(ch);
+    }
+    return result;
+}
+
 int main(int argc, char *argv[])
 {
-    if (argc < 4)
+    if (argc < 3)
     {
-        cerr << "Usage: viterbi2 <seq1> <seq2> <initial_values.txt> [output.txt]\n";
-        cerr << "Example: viterbi2 ACGT AGCT initial_values.txt alignment.txt\n";
+        cerr << "Usage: viterbi <input.bin> <initial_values.txt> [output.txt]\n";
+        cerr << "Example: viterbi input.bin initial_values.txt alignment.txt\n";
         return 1;
     }
 
-    string seq1 = argv[1];
-    string seq2 = argv[2];
-    string initfile = argv[3];
-    string outfile = (argc >= 5) ? argv[4] : "alignment_out.txt";
+    string inputFile = argv[1];
+    string initfile = argv[2];
+    string outfile = (argc >= 4) ? argv[3] : "alignment_out.txt";
 
-    // Učitaj HMM parametre
     vector<vector<double>> A;
     vector<unordered_map<string, double>> E;
     load_initial_values(initfile, A, E);
 
-    cout << "Aligning sequences:\n";
-    cout << "X: " << seq1 << " (len=" << seq1.size() << ")\n";
-    cout << "Y: " << seq2 << " (len=" << seq2.size() << ")\n\n";
-
-    // Poravnaj sekvence
-    AlignmentResult result = viterbi_align(seq1, seq2, A, E);
-
-    // Ispis rezultata
-    cout << "Alignment result:\n";
-    cout << "X: " << result.aligned_x << "\n";
-    cout << "Y: " << result.aligned_y << "\n";
-    cout << "Log-score: " << result.logScore << "\n";
-    cout << "Match states: " << result.nM << "\n";
-    cout << "Insertion (gap in Y): " << result.nIx << "\n";
-    cout << "Deletion (gap in X): " << result.nIy << "\n";
-
-    // Spremi u file
-    ofstream out(outfile);
-    if (out.is_open())
+    ifstream file(inputFile, ios::binary);
+    if (!file.is_open())
     {
-        out << "# Pairwise alignment using HMM Viterbi\n";
-        out << "# X: " << seq1 << "\n";
-        out << "# Y: " << seq2 << "\n";
-        out << "# Log-score: " << result.logScore << "\n";
-        out << "#\n";
-        out << result.aligned_x << "\n";
-        out << result.aligned_y << "\n";
-        out.close();
-        cout << "\nAlignment saved to: " << outfile << "\n";
+        cerr << "Error opening file: " << inputFile << endl;
+        return 1;
     }
+
+    vector<tuple<string, string, string, string>> sequencePairs;
+    int cleanedCount;
+    while (true)
+    {
+        if (!file.read(reinterpret_cast<char *>(&cleanedCount), sizeof(int)))
+            break;
+        if (cleanedCount <= 0)
+            continue;
+        for (int i = 0; i < cleanedCount; ++i)
+        {
+            string name1 = readCString(file);
+            if (!file)
+            {
+                cerr << "Unexpected EOF reading name1\n";
+                exit(1);
+            }
+            string name2 = readCString(file);
+            if (!file)
+            {
+                cerr << "Unexpected EOF reading name2\n";
+                exit(1);
+            }
+            string seq1 = readCString(file);
+            if (!file)
+            {
+                cerr << "Unexpected EOF reading seq1\n";
+                exit(1);
+            }
+            string seq2 = readCString(file);
+            if (!file)
+            {
+                cerr << "Unexpected EOF reading seq2\n";
+                exit(1);
+            }
+            sequencePairs.push_back(make_tuple(name1, name2, seq1, seq2));
+        }
+    }
+    file.close();
+
+    vector<AlignmentResult> results(sequencePairs.size());
+
+#pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < (int)sequencePairs.size(); ++i)
+    {
+        string name1 = get<0>(sequencePairs[i]);
+        string name2 = get<1>(sequencePairs[i]);
+        string seq1 = get<2>(sequencePairs[i]);
+        string seq2 = get<3>(sequencePairs[i]);
+
+        // Ukloni gapove
+        seq1.erase(remove(seq1.begin(), seq1.end(), '-'), seq1.end());
+        seq2.erase(remove(seq2.begin(), seq2.end(), '-'), seq2.end());
+
+        AlignmentResult result = viterbi_align(seq1, seq2, A, E);
+        results[i] = result;
+    }
+
+    ofstream out(outfile);
+    for (size_t i = 0; i < sequencePairs.size(); ++i)
+    {
+        string seq1 = get<2>(sequencePairs[i]);
+        string seq2 = get<3>(sequencePairs[i]);
+        seq1.erase(remove(seq1.begin(), seq1.end(), '-'), seq1.end());
+        seq2.erase(remove(seq2.begin(), seq2.end(), '-'), seq2.end());
+
+        if (out.is_open())
+        {
+            out << "X: " << seq1 << "\n";
+            out << "Y: " << seq2 << "\n";
+            out << "Log-score: " << results[i].logScore << "\n";
+            out << "\n";
+            out << results[i].aligned_x << "\n";
+            out << results[i].aligned_y << "\n\n";
+        }
+    }
+    out.close();
+    cout << "\nAlignment saved to: " << outfile << "\n";
 
     return 0;
 }
