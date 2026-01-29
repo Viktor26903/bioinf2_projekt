@@ -1,5 +1,3 @@
-cleaned_N1000.bin
-reader.exe
-viterbi.exe
-writer.exe
-baum_welch.exe
+*.exe
+settings.json
+*.bin
